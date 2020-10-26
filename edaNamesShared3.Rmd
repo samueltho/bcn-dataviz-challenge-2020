@@ -1,0 +1,551 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Libraries and import 
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(httr)
+library(WikidataR)
+library(svglite)
+library(openssl)
+```
+
+
+
+
+## Files
+
+Nomenclator - available here:
+https://opendata-ajuntament.barcelona.cat/data/es/dataset/nomenclator-bcn
+```{r}
+openDataNamedStreets <- read_csv("0401230100_BCN_Nomenclator_OpenData.csv")
+```
+
+Carrerer - available here:
+https://opendata-ajuntament.barcelona.cat/data/es/dataset/carrerer
+```{r}
+allStreetNames <- read_csv("allStreetNames.csv")
+```
+
+Augmented data set - available here:
+https://sharingcities.thedata.place/dataset/nou-nomenclator-bcn
+```{r}
+sharingDataNamedStreets <- read_csv("streetNamesWithWikipediaInfo.csv")
+```
+
+Neighborhood data - available here:
+https://opendata-ajuntament.barcelona.cat/data/en/dataset/20170706-districtes-barris/
+```{r}
+barrios <-  read_csv("districtes_i_barris_170705.csv")
+```
+
+
+Census data - available here:
+https://opendata-ajuntament.barcelona.cat/data/es/dataset/taula-direle-sec-cens
+```{r}
+censusAddreses <- read_csv("censusData.csv")
+```
+
+
+## Data tidying
+
+### 1 allStreetNames
+
+* Removed empty columns
+* Converted columns to correct type
+```{r}
+allStreetNamesTidy <- allStreetNames %>%
+  transmute(streetCode = as.numeric(CODI_VIA),
+         CODI_CARRER_INE = as.numeric(CODI_CARRER_INE),
+         streetTypeAb = as.factor(TIPUS_VIA),
+         officialStreetName = NOM_OFICIAL,
+         shortStreetName = NOM_CURT) 
+```
+
+
+
+### openDataNamedStreets
+
+* Removed empty columns
+* Converted columns to correct type
+```{r}
+openDataNamedStreetsTidy <- openDataNamedStreets %>%
+  transmute(streetCode = as.numeric(CODI),
+         streetType = as.factor(TIPUS_VIA),
+         PARTICULES = PARTICULES,
+         streetNameNomlcator = NOM,
+         dateApproved = dmy(DATA_APROV),
+         notesOnDate = NOTES_DATA,
+         streetNameInfo = DESCRIPCIO1,
+         referenceDocument = FONTS_DOC,
+         otherStreetNameNomclator = ALTRES_NOMS) 
+```
+
+
+
+
+### sharingDataNamedStreets
+
+* Removed empty columns
+* Converted columns to correct type
+* Not planning to use, but retaining for reference
+
+```{r}
+sharingDataNamedStreetsTidy <- sharingDataNamedStreets %>%
+  transmute(OBJECTID = OBJECTID,
+            CODI_AJB = CODI_AJB,
+            CODI_INE = CODI_INE,
+            GRUP_TVIA = GRUP_TVIA,
+            streetTypeCodeAb = as.factor(T_Via),
+            streetType = as.factor(Desc_Via),
+            streetNameNomclatorShort = N_Carrer,
+            streetNameShort = N_CarrerC,
+            streetName = N_CarrerC2,
+            StreetNameNomclator = NOM_indexOnomastic,
+            dateApproved = dmy(DATA_APROV),
+            notesOnDate = NOTES_DATA,
+            gender = as.factor(ParaulaClau_2),
+            profession = as.factor(ParaulaClau_3),
+            wikipediaPage = PAGINA_WIKIPEDIA,
+            biography = BIOGRAFIA_CAT,
+            wikipediaPage2 = PAGINA_WIKIPEDIA2)
+```
+
+
+
+### barrio
+
+* only tidied up column names
+```{r}
+barriosTidy <- barrios %>%
+  select(districtCode = CODI_DISTRICTE,
+         districtName = NOM_DISTRICTE,
+         neighborhoodCode = CODI_BARRI,
+         neighborhoodName = NOM_BARRI)
+```
+
+
+### censusAddreses
+
+* Converted columns to correct type
+```{r}
+censusAddresesTidy <- censusAddreses %>%
+  transmute(streetCode = as.numeric(CARRER),
+            streetName = NOM_CARRER,
+            doorNumberFirst = as.numeric(PRIMER_NUM),
+            doorNumberLast = as.numeric(ULTIM_NUM),
+            TIPUSNUM = TIPUSNUM,
+            districtCode = as.numeric(DISTRICTE),
+            SECC_CENS = SECC_CENS,
+            AEB = as.numeric(AEB),
+            neighborhoodCode = as.numeric(BARRI),
+            SECC_EST = SECC_EST,
+            postcode = as.factor(DPOSTAL))
+            
+```
+
+* Making a subsetted dataset with only the useful lookup columns
+```{r}
+censusNeighborhoodLookup <- censusAddresesTidy %>%
+  select(streetCode, districtCode, neighborhoodCode, postcode) %>%
+  distinct()
+```
+
+
+
+## Joining tidydata sets
+
+
+* Some duplicates exist for streets that passthrough multiple neighborhoods
+* Converted neighborhoods and districts to list
+```{r}
+streetNamesWithNeighborhoods <- allStreetNamesTidy %>%
+  left_join(censusNeighborhoodLookup, by = "streetCode") %>%
+  select(streetCode, officialStreetName, districtCode, neighborhoodCode) %>%
+  distinct() %>%
+  left_join(barriosTidy, by = "neighborhoodCode") %>%
+  select(streetCode, officialStreetName, districtName, neighborhoodName) %>%
+  nest(-streetCode, -officialStreetName)
+  
+```
+
+
+* TO-DO i think this is missing because there was no census data
+```{r}
+(missingSteetData <- streetNamesWithNeighborhoods %>%
+  mutate(joinTest = "streetnames") %>%
+  full_join(openDataNamedStreetsTidy, by = "streetCode") %>%
+  filter(is.na(joinTest)))
+```
+
+
+```{r}
+streetsNeighborhoodNomclator <- streetNamesWithNeighborhoods %>%
+  full_join(openDataNamedStreetsTidy, by = "streetCode")
+```
+
+
+## Retrieving raw itemCodes on wikidata, genderCodes and year of birth
+
+### Getting gender items from street name Nomclator
+
+```{r}
+nomclatorForItemLookup <- streetsNeighborhoodNomclator %>%
+  select(streetCode, streetNameNomlcator)
+```
+
+Total number of items to look up in wikidata
+
+```{r}
+nrow(nomclatorForItemLookup)
+```
+
+Retrieving wikidata item codes
+
+```{r}
+getItemCodesNomclator <- nomclatorForItemLookup %>%
+  mutate(itemToFind = streetNameNomlcator) %>%
+  nest(itemToFind) %>%
+  mutate(itemSearch = map(data, ~find_item(.)),
+         itemCodeToSearch = map(itemSearch, ~pluck(., 1)),
+         itemCode = map(itemCodeToSearch, ~pluck(., "id"))) %>%
+  unnest(itemCode) 
+```
+
+Creating a simplified table of item codes to look up
+
+```{r}
+itemCodesToGetPropertiesNomclator <- getItemCodesNomclator %>%
+  select(streetCode, itemCode)
+```
+
+
+Retrieving properties of assosiated items
+
+```{r}
+pluckedGenderIdByItemCodeNomclator <- itemCodesToGetPropertiesNomclator %>%
+  mutate(wikiDataObject = itemCode,
+         wikiDataObject = map(wikiDataObject, ~get_item(.)), 
+         masterObject = map(wikiDataObject, ~pluck(., 1)),
+         claimsObject = map(masterObject, ~pluck(.,"claims")),
+         genderObject = map(claimsObject, ~pluck(.,"P21")),
+         genderMainsnakObject = map(genderObject, ~pluck(.,"mainsnak")),
+         genderMainsnakDvObject = map(genderMainsnakObject, ~pluck(.,"datavalue")),
+         genderMainsnakDvValObject = map(genderMainsnakDvObject, ~pluck(.,"value")),
+         genderId = map(genderMainsnakDvValObject, ~pluck(., "id"))) %>%
+  unnest(genderId)%>%
+  select(streetCode, itemCode, genderId)
+```
+
+
+```{r}
+pluckedGenderIdByItemCodeDistinctNomclator <- pluckedGenderIdByItemCodeNomclator %>%
+  distinct() 
+```
+
+
+Number of matches Nomlator
+```{r}
+nrow(pluckedGenderIdByItemCodeDistinctNomclator)
+```
+
+
+
+
+
+### Getting item codes and genders from description via regex
+
+```{r}
+experiment <- streetsNeighborhoodNomclator %>%
+  select(streetCode, streetNameInfo, streetNameNomlcator) %>%
+  mutate(verificationNameFromInfoBeforeBracket = str_extract(streetNameInfo, "[a-zA-ZÀÁÇÉÈÍÏÓÒÚÜ·àáçéèíïóòñúü'\\-\\s]+(?=\\()"),
+         verificationNameFromInfoBeforeFirstDot = str_extract(streetNameInfo, "[a-zA-ZÀÁÇÉÈÍÏÓÒÚÜ·àáçéèíïóòñúü'\\-\\s]+(?=\\.|\\,)"),
+         streetNameShort = str_trunc(streetNameInfo, width = 80)) %>%
+  select(streetCode, verificationNameFromInfoBeforeBracket, verificationNameFromInfoBeforeFirstDot) %>%
+  pivot_longer(cols = c(verificationNameFromInfoBeforeBracket,verificationNameFromInfoBeforeFirstDot)) %>%
+  filter(!is.na(value))
+```
+
+```{r}
+experimentGetItemCodes <- experiment %>%
+  mutate(itemToFind = value) %>%
+  nest(itemToFind) %>%
+  mutate(itemSearch = map(data, ~find_item(.)),
+         itemCodeToSearch = map(itemSearch, ~pluck(., 1)),
+         itemCode = map(itemCodeToSearch, ~pluck(., "id"))) %>%
+  unnest(itemCode) 
+```
+
+
+```{r}
+experimentGetItemCodesToGetProperties <- experimentGetItemCodes %>%
+  select(streetCode, itemCode)
+```
+
+```{r}
+experimentPluckedGenderIdByItemCodeRegex <- experimentGetItemCodesToGetProperties %>%
+  mutate(wikiDataObject = itemCode,
+         wikiDataObject = map(wikiDataObject, ~get_item(.)), 
+         masterObject = map(wikiDataObject, ~pluck(., 1)),
+         claimsObject = map(masterObject, ~pluck(.,"claims")),
+         genderObject = map(claimsObject, ~pluck(.,"P21")),
+         genderMainsnakObject = map(genderObject, ~pluck(.,"mainsnak")),
+         genderMainsnakDvObject = map(genderMainsnakObject, ~pluck(.,"datavalue")),
+         genderMainsnakDvValObject = map(genderMainsnakDvObject, ~pluck(.,"value")),
+         genderId = map(genderMainsnakDvValObject, ~pluck(., "id"))) %>%
+  unnest(genderId)%>%
+  select(streetCode, itemCode, genderId)
+```
+
+
+```{r}
+experimentPluckedGenderIdByItemCodeRegexExperiment <- experimentPluckedGenderIdByItemCodeRegex %>%
+  distinct() 
+```
+
+
+Number of matches Nomlator
+```{r}
+nrow(experimentPluckedGenderIdByItemCodeRegexExperiment)
+```
+
+
+
+
+### Merging itemCode sets
+
+
+```{r}
+nomclatorAndRegexMerged <- bind_rows(experimentPluckedGenderIdByItemCodeRegexExperiment, pluckedGenderIdByItemCodeDistinctNomclator)
+```
+```{r}
+nomclatorAndRegexMerged %>%
+  distinct() 
+```
+
+
+
+### Discarding manually incorrect items where a duplicate was found (~60 streets)
+
+```{r}
+itemsToDiscard <- c("Q261691", "Q61630564", "Q48900", "Q319439","Q19998062", "Q50464207", "Q8962231", "Q759804", "Q21625441", "Q22103226","Q83321", "Q11915106", "Q5287319", "Q5833377", "Q11921849","Q60826742","Q21512998","Q5864726","Q5873187","Q5931452", "Q29253032", "Q21832771", "Q55897295","Q18719870","Q18379905", "Q1345186", "Q1706315", "Q705946", "Q6751540", "Q11934916", "Q31966", "Q16161344", "Q19458190", "Q267858", "Q1771132", "Q9033484", "Q231156", "Q55068526", "Q2406301", "Q4339403", "Q29253032","Q25400539", "Q356258", "Q16179820", "Q150575", "Q11932279", "Q11704317","Q21289900", "Q38589936", "Q20658483", "Q163543", "Q60827925", "Q64026936", "Q40365895", "Q66774041", "Q164294", "Q10307409", "Q5931538", "Q649731", "Q19291019", "Q17301468", "Q96359163", "Q45426155", "Q34189", "Q11932279", "Q2290455", "Q234253", "Q20101662", "Q5350072")
+```
+
+```{r}
+`%notin%` <- Negate(`%in%`)
+```
+
+
+```{r}
+nomclatorAndRegexMergedDeduplicated <- nomclatorAndRegexMerged %>%
+  filter(itemCode %notin% itemsToDiscard)
+```
+
+
+### Recoding wikidata gender codes
+
+```{r}
+nomclatorAndRegexTidy <- nomclatorAndRegexMergedDeduplicated %>%
+  distinct() %>%
+  mutate(genderLabel = as.factor(genderId),
+         genderLabel = fct_recode(genderLabel, Female = "Q6581072", Male = "Q6581097")) %>%
+  select(streetCode, itemCode, genderLabel)
+```
+
+
+
+### Retrieving birth years
+
+
+```{r}
+birthYearByItemCode <- nomclatorAndRegexTidy %>%
+  mutate(wikiDataObject = itemCode,
+         wikiDataObject = map(wikiDataObject, ~get_item(.)),
+         masterObject = map(wikiDataObject, ~pluck(., 1)),
+         claimsObject = map(masterObject, ~pluck(.,"claims")),
+         yearOfBirthObject = map(claimsObject, ~pluck(.,"P569")), 
+         yearOfBirthMainSnakObject = map(yearOfBirthObject, ~pluck(.,"mainsnak")),
+         yearOfBirthMainsnakDvObject = map(yearOfBirthMainSnakObject, ~pluck(.,"datavalue")),
+         yearOfBirthMainsnakDvValObject = map(yearOfBirthMainsnakDvObject, ~pluck(.,"value")),
+         yearOfBirthTimestamp = map(yearOfBirthMainsnakDvValObject, ~pluck(.,"time"))) %>%
+  unnest(yearOfBirthTimestamp) %>%
+  mutate(yearOfBirthYearDirty = str_remove(yearOfBirthTimestamp, "(-.*)"),
+         yearOfBirthYearDirty = str_remove(yearOfBirthYearDirty, "\\+"),
+         yearOfBirth = as.numeric(yearOfBirthYearDirty)) %>%
+  group_by(itemCode) %>%
+  summarise(min(yearOfBirth))
+
+```
+
+
+```{r}
+itemCodesWithGenderAndBirthYear <- nomclatorAndRegexTidy %>%
+  left_join(birthYearByItemCode, by = "itemCode") %>%
+  mutate(yearOfBirth = `min(yearOfBirth)`) %>%
+  select(-`min(yearOfBirth)`)
+```
+
+
+## Joining datasets together
+
+```{r}
+nomclatorWithGenderAndBirthYear <- streetsNeighborhoodNomclator %>%
+  left_join(itemCodesWithGenderAndBirthYear, by = "streetCode")
+```
+
+
+
+## visualisations - input to infographic
+
+```{r}
+nomclatorWithGenderAndBirthYear %>%
+  summarise(n_distinct(streetCode))
+```
+
+
+
+
+### Overall current proportions where a human with a gender was matched
+```{r}
+nomclatorWithGenderAndBirthYear %>%
+  count(genderLabel) %>%
+  filter(!is.na(genderLabel)) %>%
+  mutate(proportion = round((n / sum(n)*100), digits = 2))
+```
+
+
+### Histogram of streets by named year with output to svg
+
+```{r}
+fiveYearHistogram
+```
+
+
+```{r}
+ggsave(file="fiveYearHistogram.svg", plot=fiveYearHistogram, width=10, height=8)
+```
+
+
+### Predictions to 2030
+```{r}
+newStreetsBy2030Estimate <- nomclatorWithGenderAndBirthYear %>%
+  mutate(yearApproved = year(dateApproved)) %>%
+  count(yearApproved) %>%
+  filter(!is.na(yearApproved), yearApproved >= 2010) %>%
+  summarize(mean = mean(n)) %>%
+  mutate(prediction = mean * 10) %>%
+  select(prediction) %>%
+  pull()
+```
+
+```{r}
+totalIdentifiedFemaleStreets <- nomclatorWithGenderAndBirthYear %>%
+  mutate(yearApproved = year(dateApproved)) %>%
+  mutate(genderLabelChart = if_else(is.na(genderLabel), "No data or not a person", as.character(genderLabel))) %>%
+  filter(genderLabelChart == "Female") %>%
+  count() %>%
+  pull()
+```
+
+
+```{r}
+totalIdentifiedNamedStreets <- nomclatorWithGenderAndBirthYear %>%
+  mutate(yearApproved = year(dateApproved)) %>%
+  mutate(genderLabelChart = if_else(is.na(genderLabel), "No data or not a person", as.character(genderLabel))) %>%
+  filter(genderLabelChart != "No data or not a person") %>%
+  count() %>%
+  pull()
+```
+
+
+```{r}
+(newStreetsBy2030Estimate + totalIdentifiedFemaleStreets) / (totalIdentifiedNamedStreets + newStreetsBy2030Estimate)
+```
+
+
+
+### Neighborhoods by male/female/no match split
+
+```{r}
+biggestNeighborhoods <- nomclatorWithGenderAndBirthYear %>%
+  unnest(data) %>%
+  count(neighborhoodName) %>%
+  filter(n >= 50)
+
+
+
+nomclatorWithGenderAndBirthYear %>%
+  unnest(data) %>%
+  count(neighborhoodName, genderLabel) %>%
+  semi_join(biggestNeighborhoods, by = "neighborhoodName") %>%
+  ggplot(aes(neighborhoodName, n, fill = genderLabel)) +
+  geom_col(position = "fill") +
+  coord_flip()
+```
+
+
+## Downloading images
+
+```{r}
+retrievingImageNames <- nomclatorWithGenderAndBirthYear %>%
+  filter(genderLabel == "Female") %>%
+  mutate(wikiDataObject = itemCode,
+         wikiDataObject = map(wikiDataObject, ~get_item(.)),
+         masterObject = map(wikiDataObject, ~pluck(., 1)),
+         claimsObject = map(masterObject, ~pluck(.,"claims")),
+         imageObject = map(claimsObject, ~pluck(.,"P18")), 
+         imageObjectMainSnakObject = map(imageObject, ~pluck(.,"mainsnak")),
+         imageObjectMainsnakDvObject = map(imageObjectMainSnakObject, ~pluck(.,"datavalue")),
+         imageObjectMainsnakDvValObject = map(imageObjectMainsnakDvObject, ~pluck(.,"value"))) %>%
+  unnest(imageObjectMainsnakDvValObject) %>%
+  select(itemCode, streetNameNomlcator, imageObjectMainsnakDvValObject)
+```
+
+
+
+```{r}
+imagesToDownload <- retrievingImageNames %>%
+  mutate(imageObjectMainsnakDvValObjectUnderscore = str_replace_all(imageObjectMainsnakDvValObject, " ", "_"),
+         imageNameMd5 = md5(imageObjectMainsnakDvValObjectUnderscore),
+         a = substr(imageNameMd5, 0,1),
+         ab = substr(imageNameMd5, 1,2),
+         imageDownloadUrl = str_c("https://upload.wikimedia.org/wikipedia/commons/", a, "/", ab, "/", imageObjectMainsnakDvValObjectUnderscore),
+         imageName = str_c("images/", streetNameNomlcator, str_extract(imageObjectMainsnakDvValObject, "(\\.)(.*)")))
+```
+
+```{r}
+imageUrl <- imagesToDownload %>%
+  select(imageDownloadUrl) %>%
+  pull()
+```
+
+```{r}
+imageName <- imagesToDownload %>%
+  select(imageName) %>%
+  pull()
+```
+
+```{r}
+download.file(url=imageUrl, destfile = imageName, mode="wb")
+```
+
+
+## Exporting csv for submission
+
+```{r}
+outputCsv <- nomclatorWithGenderAndBirthYear %>%
+  unnest(data) %>%
+  select(-PARTICULES)
+```
+
+```{r}
+write_csv(outputCsv, "outputCsv.csv")
+```
+
+
+
+

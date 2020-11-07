@@ -1,12 +1,22 @@
-# bcn-dataviz-challenge-2020
-Code used to generate the findings in our submission to the World Data Viz challenge 2020 (Barcelona-Kobe)
+# Nowowenclator
+Reporitory for all files used to generate our submission to the World Data Viz Challenge 2020 (Barcelona-Kobe)
 
-# Goals:
+![Nowomenclator Title](Nowomenclator-illustration.png)
+
+# Goals
 - Highlight gender inequality in the namings of streets in Barcelona
 - A basic forecast of where inequality might be by 2030
 
+# Structure
 
-# edaNamesShared3.Rmd
+## design/
+This folder contains all the design files used to build the data viz
+- `animation.fla` : Adobe Animate source file
+- `Nowowenclator.fig` : Figma source file
+- `SVG/` : all SVG exports from Figma slides.
+
+## src/
+### edaNamesShared3.Rmd
 This file will:
 - Clean and join the input files
 - Extract strings from the streets description

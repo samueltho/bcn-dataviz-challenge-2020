@@ -1,4 +1,4 @@
-# Nowowenclator
+# Nowomenclator
 Reporitory for all files used to generate our submission to the World Data Viz Challenge 2020 (Barcelona-Kobe)
 
 ![Nowomenclator Title](Nowomenclator-illustration.png)
